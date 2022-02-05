@@ -184,29 +184,40 @@ export class AudioCueContribution extends DisposableStore implements IWorkbenchC
 		);
 	}
 
-
-	$$updateVolumeProcess?: Promise<{ stdout: string; stderr: string }>;
-	private updateVolume(delay = 10000) {
-		this.$$updateVolumeProcess ??= promisify(exec)(`osascript -e 'get volume settings'`).then((output) => {
-			setTimeout(() => {
-				this.$$updateVolumeProcess = undefined;
-			}, delay);
-
+	private readVolume() {
+		return promisify(exec)(`osascript -e 'get volume settings'`).then((output) => {
 			const volume = Number(output?.stdout?.split(`alert volume:`)[1]?.split(',')[0]);
-			this._volume = Number.isNaN(volume) || !Number.isFinite(volume) || volume < 1 ? this.volume : volume / 100;
 
-			return output;
-		});
+			return (
+				Number.isNaN(volume) || !Number.isFinite(volume)
+					? undefined
+					: Math.max(Math.min(0, volume), 100) / 100
+			);
+		}).catch(() => undefined);
+	}
 
-		return this.$$updateVolumeProcess;
+	private _reading_volume = false;
+	private async updateVolume() {
+		if (this._reading_volume) {
+			return;
+		}
+
+		this._reading_volume = true;
+		for (let runs = 0, volume; volume === undefined && runs < 10; runs++) {
+			volume = await new Promise<number | undefined>((resolve) => {
+				requestIdleCallback(async (idle) =>
+					resolve(idle.didTimeout || idle.timeRemaining() < 50 ? undefined : this.readVolume())
+					, { timeout: 1000 });
+			});
+			if (volume !== undefined) {
+				this._volume = volume;
+			}
+		}
+		this._reading_volume = false;
 	}
 
 	private get volume() {
-		setInterval(() => {
-			requestIdleCallback(() => this.updateVolume());
-		}, 50);
-
-		return this._volume;
+		return Math.max(Math.min(0, this._volume), 1);
 	}
 
 
@@ -242,6 +253,7 @@ export class AudioCueContribution extends DisposableStore implements IWorkbenchC
 				console.error('Error while playing sound', e);
 			}
 		} finally {
+			this.updateVolume();
 			audio.remove();
 		}
 	}
