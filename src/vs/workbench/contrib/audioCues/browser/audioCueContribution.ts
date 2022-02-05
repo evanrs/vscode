@@ -16,8 +16,11 @@ import { IAccessibilityService } from 'vs/platform/accessibility/common/accessib
 import { IMarkerService, MarkerSeverity } from 'vs/platform/markers/common/markers';
 import { FoldingController } from 'vs/editor/contrib/folding/browser/folding';
 import { FoldingModel } from 'vs/editor/contrib/folding/browser/foldingModel';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
 export class AudioCueContribution extends DisposableStore implements IWorkbenchContribution {
+	private _volume = .5;
 	private audioCuesEnabled = false;
 	private readonly store = this.add(new DisposableStore());
 
@@ -66,6 +69,8 @@ export class AudioCueContribution extends DisposableStore implements IWorkbenchC
 			this.store.clear();
 			return;
 		}
+
+		this.updateVolume();
 
 		this.store.add(
 			Event.runAndSubscribeWithStore(
@@ -179,6 +184,32 @@ export class AudioCueContribution extends DisposableStore implements IWorkbenchC
 		);
 	}
 
+
+	$$updateVolumeProcess?: Promise<{ stdout: string; stderr: string }>;
+	private updateVolume(delay = 10000) {
+		this.$$updateVolumeProcess ??= promisify(exec)(`osascript -e 'get volume settings'`).then((output) => {
+			setTimeout(() => {
+				this.$$updateVolumeProcess = undefined;
+			}, delay);
+
+			const volume = Number(output?.stdout?.split(`alert volume:`)[1]?.split(',')[0]);
+			this._volume = Number.isNaN(volume) || !Number.isFinite(volume) || volume < 1 ? this.volume : volume / 100;
+
+			return output;
+		});
+
+		return this.$$updateVolumeProcess;
+	}
+
+	private get volume() {
+		setInterval(() => {
+			requestIdleCallback(() => this.updateVolume());
+		}, 50);
+
+		return this._volume;
+	}
+
+
 	private handleBreakpointOnLine(): void {
 		this.playSound('break');
 	}
@@ -198,8 +229,11 @@ export class AudioCueContribution extends DisposableStore implements IWorkbenchC
 
 		const url = FileAccess.asBrowserUri(`vs/workbench/contrib/audioCues/browser/media/${fileName}.opus`, require).toString();
 		const audio = new Audio(url);
+		audio.volume = this.volume;
 
 		try {
+
+
 			try {
 				// Don't play when loading takes more than 1s, due to loading, decoding or playing issues.
 				// Delayed sounds are very confusing.
